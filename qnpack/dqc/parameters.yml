@@ -1,6 +1,6 @@
 sim:
   debug: false
-  iterations: 10
+  iterations: 1
 
 # Circuit source configuration:
 #   mode: "tket"  — use pytket-dqc dist_commands text file

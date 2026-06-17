@@ -864,7 +864,7 @@ class ControllerProtocol(NodeProtocol):
             schedule = self.compute_timeslot_schedule(
                 self.qpu_commands, self.mapping_list
             )
-            self.print_timeslot_schedule(schedule, self.mapping_list)
+            # self.print_timeslot_schedule(schedule, self.mapping_list)
 
         for qpu_id, commands in self.qpu_commands.items():
             self.send_commands_to_qpu(qpu_id, commands)
