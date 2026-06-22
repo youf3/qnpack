@@ -9,6 +9,10 @@ This is a **pure parser** — it emits raw command dicts with no labels
 assigned and no ``entanglement_gen`` commands inserted. All labeling is
 handled by the ``qnpack.dqc.labeling`` package after parsing.
 
+This is a **pure parser** — it emits raw command dicts with no labels
+assigned and no ``entanglement_gen`` commands inserted.  All labeling is
+handled by the ``qnpack.dqc.labeling`` package after parsing.
+
 Op names emitted (canonical):
     ejpp_start        — data-side EJPP start
     ejpp_start_link   — link-side EJPP start

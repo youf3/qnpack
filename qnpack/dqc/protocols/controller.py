@@ -839,6 +839,15 @@ class ControllerProtocol(NodeProtocol):
             self.start_ready = {k: set() for k in self.start_qpus}
             self.end_ready   = {k: set() for k in self.end_qpus}
 
+        # ── Label commands and build process maps ─────────────────────────────
+        labeled, process_maps = label_and_build_maps(self.qpu_commands)
+        self.qpu_commands = labeled
+        self.start_qpus              = process_maps['start_qpus']
+        self.end_qpus                = process_maps['end_qpus']
+        self.entanglement_gen_labels = process_maps['entanglement_gen_labels']
+        self.start_ready = {k: set() for k in self.start_qpus}
+        self.end_ready   = {k: set() for k in self.end_qpus}
+
         if getattr(self.cfg.circuit, 'pre_schedule_entanglement', False):
             expected_latency = getattr(
                 self.cfg.circuit, 'expected_ent_latency_ns', 0
