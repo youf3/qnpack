@@ -1271,5 +1271,190 @@ def main():
         else:
             print(output_data)
 
+def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_params):
+    """Run a DQC simulation using pre-labeled commands from an external source.
+
+    This is the entry point called (indirectly) by the DQC plugin after it has
+    parsed and labeled the circuit.  The plugin serializes the labeled commands
+    and process_maps to JSON and sends them here; this function deserializes,
+    sets up the network, and runs NetSquid without re-parsing or re-labeling.
+
+    Parameters
+    ----------
+    labeled_payload : dict
+        Must contain:
+        - ``labeled_commands`` : ``{str(qpu_id): [cmd_dict, ...]}``
+          Keys may be string integers; they are converted to int internally.
+        - ``process_maps``     : ``{start_qpus, end_qpus, entanglement_gen_labels}``
+          ``start_qpus``/``end_qpus`` values are sets stored as lists in JSON;
+          they are converted back to sets here.
+        May optionally contain:
+        - ``topology``  : topology dict (same format as load_topology output)
+        - ``sim_params``: noise params, etc.
+    topology_data : list or None
+        Topology loaded via load_topology().  If None and not in the payload,
+        the default topology file is used.
+    num_runs : int
+        Number of simulation iterations (default 1).
+    **sim_params
+        Additional keyword arguments forwarded to DQCSimulation constructor
+        as ``fixed_params``.
+
+    Returns
+    -------
+    list
+        List of result row dicts (one per run).
+    """
+    # ── Deserialize payload ───────────────────────────────────────────────────
+    raw_commands = labeled_payload["labeled_commands"]
+    raw_maps     = labeled_payload["process_maps"]
+
+    # JSON serialises integer dict keys as strings; convert back to int.
+    labeled_commands = {int(k): v for k, v in raw_commands.items()}
+
+    # JSON serialises sets as lists; convert back to sets.
+    start_qpus = {
+        k: set(int(x) for x in v)
+        for k, v in raw_maps.get("start_qpus", {}).items()
+    }
+    end_qpus = {
+        k: set(int(x) for x in v)
+        for k, v in raw_maps.get("end_qpus", {}).items()
+    }
+    entanglement_gen_labels = set(raw_maps.get("entanglement_gen_labels", []))
+    process_maps = {
+        "start_qpus":              start_qpus,
+        "end_qpus":                end_qpus,
+        "entanglement_gen_labels": entanglement_gen_labels,
+    }
+
+    # Use topology from payload if not supplied directly
+    if topology_data is None:
+        topology_data = labeled_payload.get("topology")
+
+    # ── Build simulation ──────────────────────────────────────────────────────
+    # Resolve the bundled parameters.yml by package path so the subprocess
+    # works regardless of the caller's CWD (Config() defaults to the bare
+    # filename "parameters.yml" which only works when run from the package dir).
+    _pkg_params = os.path.join(os.path.dirname(__file__), "parameters.yml")
+    fixed_params = dict(sim_params)
+    sim = DQCSimulation(
+        parameter_file=_pkg_params,
+        fixed_params=fixed_params,
+        varying_params={},
+    )
+
+    if topology_data is None:
+        topology_data = sim.load_topology()
+
+    # ── Run simulations ───────────────────────────────────────────────────────
+    results = []
+    for run_idx in range(num_runs):
+        ns.sim_reset()
+        net, qpu_nodes, bsm_nodes, ctrl, qpu_info, bsm_info = \
+            sim.setup_network_from_topology(topology_data)
+
+        from qnpack.dqc.protocols import DQCProtocol
+        protocol = DQCProtocol(
+            sim.cfg,
+            network=net,
+            qpu_nodes=qpu_nodes,
+            controller_node=ctrl,
+            qpu_info=qpu_info,
+            bsm_info=bsm_info,
+            bsm_nodes=bsm_nodes,
+            run_idx=run_idx,
+            frontend=None,
+            q_switch=getattr(net, 'q_switch', None),
+            switch_node=getattr(net, 'quantum_switch_node', None),
+            pre_labeled_commands=labeled_commands,
+            pre_process_maps=process_maps,
+        )
+
+        protocol.start()
+        ns.sim_run()
+
+        results.append({"run": run_idx, "status": "completed"})
+
+    return results
+
+
+def run_from_labeled_cli():
+    """CLI entry point: dqc-sim-labeled.
+
+    Reads a JSON payload from a file and runs the simulation.
+
+    Usage::
+
+        dqc-sim-labeled labeled_commands.json [--runs N] [--topology topo.json]
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="dqc-sim-labeled",
+        description=(
+            "Run a DQC simulation from pre-labeled commands produced by the "
+            "DQC plugin.  The input JSON must contain 'labeled_commands' and "
+            "'process_maps' keys."
+        ),
+    )
+    parser.add_argument(
+        "labeled_file",
+        metavar="FILE",
+        help="Path to JSON file containing labeled_commands and process_maps.",
+    )
+    parser.add_argument(
+        "--runs", "-n",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of simulation runs (default: 1).",
+    )
+    parser.add_argument(
+        "--topology", "-t",
+        default=None,
+        metavar="FILE",
+        help="Path to topology JSON file (optional; uses default if omitted).",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default=None,
+        metavar="FILE",
+        help="Write results JSON to this file (prints to stdout if omitted).",
+    )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        default=False,
+        help="Enable debug-level logging.",
+    )
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    with open(args.labeled_file, "r") as f:
+        payload = json.load(f)
+
+    topology_data = None
+    if args.topology:
+        from qnpack.dqc.sim import DQCSimulation
+        topology_data = DQCSimulation.load_topology_from_file(args.topology)
+
+    results = run_from_labeled(payload, topology_data=topology_data, num_runs=args.runs)
+
+    output_json = json.dumps(results, indent=2)
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(output_json)
+        log.info(f"Results written to {args.output}")
+    else:
+        print(output_json)
+
+
 if __name__ == "__main__":
     main()
