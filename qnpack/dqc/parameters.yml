@@ -6,14 +6,14 @@ sim:
 #   mode: "tket"  — use pytket-dqc dist_commands text file
 #   mode: "cisco" — use Cisco QASM 3.0 file directly
 circuit:
-  mode: "cisco"
+  mode: "tket"
   pre_schedule_entanglement: false
   # Path to the dist_commands file (used when mode=tket)
   dist_commands_file: "commands/grover_4_3qpu.txt"
   #dist_commands_file: "commands/grover_4q_3qpu.txt"
   # "commands/dist_commands_4q.txt"
   # Path to the QASM 3.0 file (used when mode=cisco)
-  qasm_file: "qasm/grover4_3qpu.qasm"
+  qasm_file: "qasm/grover4_1qpu.qasm"
   # "qasm/grover4_topv1.qasm"
   # "qasm/grover12_3qpu.qasm"
   # measure_qubits: which memory positions to read per QPU after each run.
