@@ -1271,7 +1271,7 @@ def main():
         else:
             print(output_data)
 
-def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_params):
+def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, noise=None):
     """Run a DQC simulation using pre-labeled commands from an external source.
 
     This is the entry point called (indirectly) by the DQC plugin after it has
@@ -1289,16 +1289,26 @@ def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_para
           ``start_qpus``/``end_qpus`` values are sets stored as lists in JSON;
           they are converted back to sets here.
         May optionally contain:
-        - ``topology``  : topology dict (same format as load_topology output)
-        - ``sim_params``: noise params, etc.
+        - ``topology``        : topology dict (same format as load_topology output)
+        - ``num_output_bits`` : int — number of output bits in the measurement register
+        - ``output_reg_name`` : str — register name (default ``"m"``)
     topology_data : list or None
         Topology loaded via load_topology().  If None and not in the payload,
         the default topology file is used.
     num_runs : int
         Number of simulation iterations (default 1).
-    **sim_params
-        Additional keyword arguments forwarded to DQCSimulation constructor
-        as ``fixed_params``.
+    noise : dict or None
+        Noise overrides in the same nested structure as ``parameters.yml``, e.g.::
+
+            {
+                "qpu": {
+                    "two_q_depolar_prob": 0.0001,
+                    "one_q_depolar_prob": 0.00001,
+                },
+                "memory": {"T1": 600_000_000, "T2": 60_000_000},
+            }
+
+        Pass ``None`` (default) for a noiseless run.
 
     Returns
     -------
@@ -1333,11 +1343,18 @@ def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_para
         topology_data = labeled_payload.get("topology")
 
     # ── Build simulation ──────────────────────────────────────────────────────
-    # Resolve the bundled parameters.yml by package path so the subprocess
-    # works regardless of the caller's CWD (Config() defaults to the bare
-    # filename "parameters.yml" which only works when run from the package dir).
-    _pkg_params = os.path.join(os.path.dirname(__file__), "parameters.yml")
-    fixed_params = dict(sim_params)
+    # Resolve parameters.yml relative to this file's actual on-disk location.
+    # Use importlib.resources as a fallback so editable-installs and physical
+    # copies both work even when __file__ points to a directory without the yml.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _pkg_params = os.path.join(_here, "parameters.yml")
+    if not os.path.exists(_pkg_params):
+        import importlib.resources as _res
+        try:
+            _pkg_params = str(_res.files("qnpack.dqc") / "parameters.yml")
+        except Exception:
+            pass
+    fixed_params = noise or {}
     sim = DQCSimulation(
         parameter_file=_pkg_params,
         fixed_params=fixed_params,
@@ -1348,13 +1365,20 @@ def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_para
         topology_data = sim.load_topology()
 
     # ── Run simulations ───────────────────────────────────────────────────────
+    # The QASM3/cisco frontend stores measurement results in QPUProtocol
+    # .final_measurements and .classical_memory (keyed "m_0", "m_1", …) rather
+    # than in qubit memory positions.  Read from those directly after sim_run(),
+    # the same way BaseFrontend._collect_qpu_results / get_result_row does.
+    output_reg  = labeled_payload.get("output_reg_name", "m")
+    num_out     = labeled_payload.get("num_output_bits")
+
     results = []
+
     for run_idx in range(num_runs):
         ns.sim_reset()
         net, qpu_nodes, bsm_nodes, ctrl, qpu_info, bsm_info = \
             sim.setup_network_from_topology(topology_data)
 
-        from qnpack.dqc.protocols import DQCProtocol
         protocol = DQCProtocol(
             sim.cfg,
             network=net,
@@ -1371,10 +1395,57 @@ def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, **sim_para
             pre_process_maps=process_maps,
         )
 
+        sim_start = ns.sim_time()
         protocol.start()
         ns.sim_run()
+        sim_duration_s = (ns.sim_time() - sim_start) / 1e9
 
-        results.append({"run": run_idx, "status": "completed"})
+        # Collect from QPUProtocol.final_measurements / .classical_memory
+        from qnpack.dqc.protocols.qpu import QPUProtocol as _QPUProtocol
+        merged = {}
+        for proto in protocol.subprotocols.values():
+            if not isinstance(proto, _QPUProtocol):
+                continue
+            for k, v in getattr(proto, 'classical_memory', {}).items():
+                if k not in merged:
+                    merged[k] = v
+            for k, v in getattr(proto, 'final_measurements', {}).items():
+                merged[k] = v  # final_measurements wins
+
+        # Derive ordered col_names from collected keys if not supplied in payload.
+        # For the 'm' register use Qiskit little-endian order (reversed indices).
+        if not merged:
+            log.warning(f"[run_from_labeled] Run {run_idx}: no measurements collected")
+            col_names = []
+        elif num_out is not None:
+            n = int(num_out)
+            order = reversed(range(n)) if output_reg == 'm' else range(n)
+            col_names = [f"{output_reg}_{i}" for i in order]
+        else:
+            # Infer from collected keys: find all matching "reg_N" keys
+            import re as _re
+            pat = _re.compile(rf"^{_re.escape(output_reg)}_(\d+)$")
+            indices = sorted(
+                int(m.group(1))
+                for k in merged if (m := pat.match(k))
+            )
+            if output_reg == 'm':
+                indices = list(reversed(indices))
+            col_names = [f"{output_reg}_{i}" for i in indices]
+
+        row = {"run": run_idx, "sim_duration_s": sim_duration_s}
+        for key in col_names:
+            row[key] = int(merged[key]) if key in merged else None
+
+        bitstring = "".join(
+            str(int(row[c])) if row.get(c) is not None else "?"
+            for c in col_names
+        )
+        row["bitstring"] = bitstring
+        log.info(f"--- Run {run_idx}: bitstring={bitstring}  cols={col_names} ---")
+        results.append(row)
+
+        protocol.stop()
 
     return results
 
