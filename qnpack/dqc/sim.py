@@ -1,7 +1,5 @@
 import json
 import os
-import re
-import warnings
 import logging
 import netsquid as ns
 import pydynaa as pd
@@ -751,7 +749,7 @@ class DQCSimulation(Simulation):
             "DQC Measurement Distribution: Noiseless vs Noisy", fontsize=12, y=1.02
         )
         plt.tight_layout()
-        hist_path = os.path.join(results_dir, filename)
+        hist_path = os.path.join(self.output_dir, filename)
         plt.savefig(hist_path, dpi=150, bbox_inches="tight")
         log.info(f"Combined histogram saved to {hist_path}")
         plt.close(fig)
@@ -1271,6 +1269,10 @@ def main():
         else:
             print(output_data)
 
+if __name__ == "__main__":
+    main()
+
+
 def run_from_labeled(labeled_payload, topology_data=None, num_runs=1, noise=None):
     """Run a DQC simulation using pre-labeled commands from an external source.
 
@@ -1525,7 +1527,3 @@ def run_from_labeled_cli():
         log.info(f"Results written to {args.output}")
     else:
         print(output_json)
-
-
-if __name__ == "__main__":
-    main()
