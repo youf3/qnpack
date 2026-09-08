@@ -3,7 +3,7 @@ frontends/qasm3_frontend.py
 ---------------------------
 QASM3Frontend: parser using openqasm3 AST — converts a QASM 3.0 file into the
 canonical per-QPU command IR. All labeling (entanglement_label, msg_exchange
-labels) is performed by the labeling layer (labeling/qasm_labeler.py).
+labels) is performed by the labeling layer (labeling/labeler.py).
 
 Op names emitted (canonical):
     entanglement_gen  — Bell-pair generation (entanglement_label=None)
