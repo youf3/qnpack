@@ -485,6 +485,16 @@ class DQCSimulation(Simulation):
             labeled_payload.get("topology") or self.load_topology()
         )
 
+        # If the plugin already applied pre-entanglement scheduling, suppress
+        # the Controller's own pass to avoid double-application.
+        if labeled_payload.get("pre_scheduled", False):
+            if hasattr(self.cfg, "circuit"):
+                self.cfg.circuit.pre_schedule_entanglement = False
+                log.debug(
+                    "[start_from_labeled] pre_scheduled=True in payload; "
+                    "suppressing ControllerProtocol pre-scheduling."
+                )
+
         circuit_cfg = getattr(self.cfg, "circuit", None)
         measure_qubits = cfg_util.resolve_measure_qubits(circuit_cfg)
         frontend = self._frontend_for_payload(labeled_payload, measure_qubits)
